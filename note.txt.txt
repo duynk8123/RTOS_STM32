@@ -1,0 +1,120 @@
+void mPrintf(const char* format,...)
+{
+	for(uint8_t i=0;i<40;i++){
+		buffer[i] = 0;
+	}
+	va_list arg;
+	va_start(arg,format);
+	vsnprintf(buffer,sizeof(buffer),format,arg);
+	va_end(arg);
+	HAL_UART_Transmit(&huart1,(uint8_t*)buffer,sizeof(buffer),HAL_MAX_DELAY);
+}
+
+Bài 3:
+1. Độ ưu tiên cao hơn -> chạy trước
+2. Nếu thằng có độ ưu tiên cao nó không bị block hoặc dừng lại bởi một cơ chế nào đó 
+	-> luôn được chạy -> kernel sẽ không cấp tài nguyên cho các task khác
+3. Các trạng thái khác của task
+	Cách để thêm hàm eTaskGetState để kiểm tra state của task trên cubeide:
+		B1: đi theo đường dẫn /Debug/Core/Src/freertos.o/FreeRTOSConfig.h
+		B2: thêm vào #define INCLUDE_eTaskGetState 1
+Bài 4:
+Hal_delay: delay luôn cả hệ thống
+osDelay: chỉ delay task đó
+Bài 5:
+- Trong STM32 có core M3 : trong core này có core register( bộ thanh ghi: điển hình là pc và sp)
+- Vùng nhớ: các task được lưu trữ ở vùng Heap và trong các task được phân thêm vùng STACK và TCB(task control block: chứa core register)
+- SP: lưu trữ địa chỉ của stack 
+- PC: lưu trữ địa chỉ của lệnh tiếp theo trong arm cortex m3
+- Tìm trong tskTCB trong file tasks.c
+	=> thấy một typedef tskTaskControlBlock, ban đầu khởi tạo *pxTopOfStack
+- Không nên sử dụng heap_1,_2,_3(
+	+ Heap_1: không cho phép giải phóng bộ nhớ
+	+ Heap_2: cho phép giải phóng nhma k cho các task đặt cạnh nhau (điều chúng ta đang làm)
+	+ Heap_3: có hiện tượng phân mảnh bộ nhớ sau khi free( ví dụ 1 task sài 10kb thì free ra 1 vùng 10kb,15kb thì ra 15kb,nếu muốn sử dụng 1 task có bộ nhớ 25kb thì không thể sử dụng đc)
+	=> nên sài Heap_4 và _5 (thông dụng nhất là heap_4) có thể kiểm tra /Middlewares/Third_Party/FreeRTOS/Source/portable/MemMang/heap_4.c
+Bài 6: Context switching: chuyển đổi ngữ cảnh
+	- Là quá trình lưu trạng thái (context) của một task đang thực thi và phục hồi trạng thái của task khác. Nó đảm bảo rằng khi một task không còn thực thi, hệ thống có thể "quay lại" và tiếp tục từ nơi task đó đã dừng lại.
+	- Ngay khi gặp hàm osDelay thì sẽ nhảy đến hàm này vTaskSwitchContext: function tiến hành chuyển đổi ngữ cảnh
+	- pxCurrentTCB: con trỏ toàn cục của freeRTOS, trỏ đến TCB của task hiện tại đang thực thi (chứa đầy đủ thông tin của task đang chạy)
+	- Mỗi Task có một bộ TCB riêng nhưng khi thực hiện thì core M3 chỉ thực hiện một mà thôi
+Bài 7: Queue
+	- Không nên sử dụng các biến toàn cục
+	- Gồm: message queue(truyền dữ liệu dạng đơn) và mail queue(truyền dữ liệu dạng khối)
+	- Theo cơ chế FIFO
+	- Nếu như osMessageGet không get được data từ task mong muốn thì nó sẽ lại rơi vào blocked state và nó chờ ở đó luôn.
+Bài 8:Mail Queue (Truyền dữ liệu dưới dạng struct)
+typedef struct {
+	uint32_t header;
+	uint8_t data;
+	uint8_t cnt;
+}DATA_Typedef;
+osMailQId myQueue01Handle;
+  osMailQDef(myQueue01,14,DATA_Typedef); => chú ý: nếu là 14 size thì chỉ khởi tạo 13 lần (cnt in ra đến 12) và nếu không free thì sẽ bị tràn queue
+  myQueue01Handle = osMailCreate(osMailQ(myQueue01), NULL);
+DATA_Typedef *receiver;
+//nhan struct
+void StartTask02(void const * argument)
+{
+	osEvent event;
+  while(1)
+  {
+	mPrintf("Task 2 is running \n");
+	event = osMailGet(myQueue01Handle, osWaitForever);
+	if(event.status == osEventMail){
+		receiver = (DATA_Typedef*)event.value.p;
+		mPrintf("%d cnt is:\n ", receiver->cnt);
+	}
+    osDelay(1000);
+  }
+}
+/* USER CODE END Header_StartTask01 */
+//truyen struct
+uint8_t test=0;
+void StartTask01(void const * argument)
+{
+  /* USER CODE BEGIN 5 */
+
+  /* Infinite loop */
+  while(1)
+  {
+	DATA_Typedef *mData = osMailAlloc(myQueue01Handle, 100);
+	mData->header = 0x12345678;
+	mData->data   = 0x02;
+	mData->cnt    = test++;
+	mPrintf("Task1 is running \n");
+    osDelay(5000);
+    osMailPut(myQueue01Handle, mData);
+  }
+  /* USER CODE END 5 */
+}
+Bài 9: Semaphore 
+osSemaphoreId myBinarySem01Handle;
+  osSemaphoreDef(myBinarySem01);
+  myBinarySem01Handle = osSemaphoreCreate(osSemaphore(myBinarySem01), 1);
+void StartTask02(void const * argument)
+{
+mPrintf("cnt semaphore: %d\n", osSemaphoreGetCount(myBinarySem01Handle));
+  while(1)
+  {
+	osSemaphoreWait(myBinarySem01Handle, osWaitForever);
+	mPrintf("Task 2 is running \n");
+	osSemaphoreRelease(myBinarySem01Handle);
+    osDelay(1000);
+  }
+}
+void StartTask01(void const * argument)
+{
+ mPrintf("cnt semaphore: %d\n", osSemaphoreGetCount(myBinarySem01Handle));
+  while(1)
+  {
+	osSemaphoreWait(myBinarySem01Handle, osWaitForever);
+	mPrintf("Task 1 is running \n");
+	osSemaphoreRelease(myBinarySem01Handle);
+    osDelay(1000);
+  }
+}
+Bài 10: Mutex :gần tương tự với semaphore
+Bài 11: Sự khác biệt cơ bản nhất của mutex và semaphore
+	- Semaphore: khi task A giành lấy key và không release key, thì bất kì task nào chuẩn bị chạy cũng có thể release.
+	- Mutex	   : task nào giữ mutex thì task đó mới release key đc
